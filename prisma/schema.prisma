@@ -1,0 +1,715 @@
+// SocialFlow database schema.
+// Source of truth: docs/socialflow.dbml (PostgreSQL).
+// This local build uses SQLite so the app runs with zero external services.
+// Enums, arrays and jsonb are represented as strings (JSON where needed).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String    @id @default(uuid())
+  email            String    @unique
+  passwordHash     String?
+  fullName         String
+  avatarUrl        String?
+  timezone         String    @default("UTC")
+  isActive         Boolean   @default(true)
+  emailVerifiedAt  DateTime?
+  lastLoginAt      DateTime?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  preferences      String    @default("{}")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  ownedWorkspaces        Workspace[]        @relation("WorkspaceOwner")
+  memberships            WorkspaceMember[]
+  sessions               UserSession[]
+  authTokens             AuthToken[]
+  invitationsSent        Invitation[]       @relation("InvitationInviter")
+  socialAccountsConnected SocialAccount[]   @relation("SocialAccountConnector")
+  campaignsCreated       Campaign[]         @relation("CampaignCreator")
+  mediaUploaded          MediaAsset[]       @relation("MediaUploader")
+  postsCreated           Post[]             @relation("PostCreator")
+  approvals              PostApproval[]     @relation("ApprovalReviewer")
+  tasksAssigned          Task[]             @relation("TaskAssignee")
+  tasksCreated           Task[]             @relation("TaskCreator")
+  taskComments           TaskComment[]
+  automationRulesCreated AutomationRule[]   @relation("AutomationCreator")
+  recommendationsDecided AiRecommendation[] @relation("RecommendationDecider")
+  discordConnected       DiscordIntegration[] @relation("DiscordConnector")
+  discordLinks           DiscordUserLink[]
+  discordCommands        DiscordCommand[]
+  notifications          Notification[]
+  activityLogs           ActivityLog[]      @relation("ActivityActor")
+}
+
+model Workspace {
+  id                   String    @id @default(uuid())
+  name                 String
+  slug                 String    @unique
+  logoUrl              String?
+  defaultTimezone      String    @default("UTC")
+  ownerId              String
+  settings             String    @default("{}")
+  onboardingStep       Int       @default(1)
+  onboardingCompletedAt DateTime?
+  approvalRequired     Boolean   @default(true)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  deletedAt            DateTime?
+
+  owner              User                @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members            WorkspaceMember[]
+  rolePermissions    RolePermission[]
+  invitations        Invitation[]
+  socialAccounts     SocialAccount[]
+  campaigns          Campaign[]
+  mediaAssets        MediaAsset[]
+  posts              Post[]
+  postTargets        PostTarget[]
+  hashtags           Hashtag[]
+  publishJobs        PublishJob[]
+  postingSlots       PostingSlot[]
+  postApprovals      PostApproval[]
+  tasks              Task[]
+  automationRules    AutomationRule[]
+  automationRuns     AutomationRun[]
+  recommendations    AiRecommendation[]
+  discordIntegration DiscordIntegration?
+  discordUserLinks   DiscordUserLink[]
+  discordCommands    DiscordCommand[]
+  analyticsDaily     AnalyticsDaily[]
+  accountMetricsDaily AccountMetricsDaily[]
+  reports            Report[]
+  notifications      Notification[]
+  activityLogs       ActivityLog[]
+
+  @@index([slug])
+}
+
+model WorkspaceMember {
+  id                  String   @id @default(uuid())
+  workspaceId         String
+  userId              String
+  role                String   @default("executive")
+  status              String   @default("active")
+  permissionOverrides String   @default("{}")
+  joinedAt            DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model RolePermission {
+  id          String  @id @default(uuid())
+  workspaceId String
+  role        String
+  permission  String
+  allowed     Boolean @default(true)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, role, permission])
+}
+
+model Invitation {
+  id          String    @id @default(uuid())
+  workspaceId String
+  email       String
+  role        String    @default("executive")
+  tokenHash   String    @unique
+  status      String    @default("pending")
+  invitedBy   String
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  inviter   User      @relation("InvitationInviter", fields: [invitedBy], references: [id])
+
+  @@index([workspaceId, email, status])
+}
+
+model AuthToken {
+  id        String    @id @default(uuid())
+  userId    String
+  type      String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+model UserSession {
+  id               String    @id @default(uuid())
+  userId           String
+  refreshTokenHash String    @unique
+  ipAddress        String?
+  userAgent        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model SocialAccount {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  platform          String
+  platformAccountId String
+  accountName       String
+  username          String?
+  profilePictureUrl String?
+  linkedPageId      String?
+  status            String    @default("active")
+  connectedBy       String
+  connectedAt       DateTime  @default(now())
+  lastSyncedAt      DateTime?
+  disconnectedAt    DateTime?
+  metadata          String    @default("{}")
+
+  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connector    User               @relation("SocialAccountConnector", fields: [connectedBy], references: [id])
+  credentials  SocialCredential?
+  targets      PostTarget[]
+  postingSlots PostingSlot[]
+  accountMetrics AccountMetricsDaily[]
+  recommendations AiRecommendation[]
+
+  @@unique([platform, platformAccountId])
+  @@index([workspaceId, status])
+}
+
+model SocialCredential {
+  id                    String    @id @default(uuid())
+  socialAccountId       String    @unique
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  encryptionKeyId       String
+  scopes                String    @default("[]")
+  expiresAt             DateTime?
+  lastRefreshedAt       DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+}
+
+model Campaign {
+  id          String    @id @default(uuid())
+  workspaceId String
+  name        String
+  description String?
+  status      String    @default("planned")
+  startDate   DateTime?
+  endDate     DateTime?
+  goal        String?
+  color       String?
+  createdBy   String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator   User      @relation("CampaignCreator", fields: [createdBy], references: [id])
+  posts     Post[]
+  tasks     Task[]
+
+  @@index([workspaceId, status])
+}
+
+model MediaAsset {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  uploadedBy      String
+  type            String
+  fileName        String
+  storageKey      String
+  publicUrl       String?
+  mimeType        String
+  sizeBytes       Int
+  width           Int?
+  height          Int?
+  durationSeconds Float?
+  thumbnailUrl    String?
+  altText         String?
+  folder          String?
+  tags            String    @default("[]")
+  createdAt       DateTime  @default(now())
+  deletedAt       DateTime?
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  uploader  User        @relation("MediaUploader", fields: [uploadedBy], references: [id])
+  postMedia PostMedia[]
+
+  @@index([workspaceId, type])
+  @@index([workspaceId, createdAt])
+}
+
+model Post {
+  id          String    @id @default(uuid())
+  workspaceId String
+  campaignId  String?
+  title       String?
+  baseCaption String?
+  format      String    @default("feed_post")
+  status      String    @default("draft")
+  createdBy   String
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign  Campaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  creator   User          @relation("PostCreator", fields: [createdBy], references: [id])
+  targets   PostTarget[]
+  media     PostMedia[]
+  hashtags  PostHashtag[]
+  approvals PostApproval[]
+  tasks     Task[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, campaignId])
+}
+
+model PostTarget {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  postId            String
+  socialAccountId   String
+  caption           String?
+  firstComment      String?
+  platformOptions   String    @default("{}")
+  scheduledAt       DateTime?
+  publishedAt       DateTime?
+  status            String    @default("draft")
+  externalPostId    String?
+  externalPermalink String?
+  lastError         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  post          Post           @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount  @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
+  media         PostMedia[]
+  publishJobs   PublishJob[]
+  analytics     AnalyticsDaily[]
+  recommendations AiRecommendation[]
+
+  @@unique([postId, socialAccountId])
+  @@index([workspaceId, status, scheduledAt])
+  @@index([socialAccountId, scheduledAt])
+}
+
+model PostMedia {
+  id           String  @id @default(uuid())
+  postId       String
+  postTargetId String?
+  mediaAssetId String
+  position     Int     @default(0)
+  cropSettings String?
+
+  post       Post        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postTarget PostTarget? @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+  asset      MediaAsset  @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
+
+  @@index([postId, postTargetId, position])
+  @@index([mediaAssetId])
+}
+
+model Hashtag {
+  id          String   @id @default(uuid())
+  workspaceId String
+  tag         String
+  groupName   String?
+  useCount    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  posts     PostHashtag[]
+
+  @@unique([workspaceId, tag])
+}
+
+model PostHashtag {
+  postId    String
+  hashtagId String
+
+  post    Post    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  hashtag Hashtag @relation(fields: [hashtagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, hashtagId])
+}
+
+model PublishJob {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  postTargetId   String
+  idempotencyKey String    @unique
+  runAt          DateTime
+  status         String    @default("waiting")
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  lockedBy       String?
+  lockedAt       DateTime?
+  nextRetryAt    DateTime?
+  queueJobId     String?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  postTarget PostTarget      @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+  attemptsList PublishAttempt[]
+
+  @@index([status, runAt])
+  @@index([workspaceId, status])
+  @@index([postTargetId])
+}
+
+model PublishAttempt {
+  id            String    @id @default(uuid())
+  jobId         String
+  attemptNumber Int
+  result        String
+  responseCode  Int?
+  errorCode     String?
+  errorMessage  String?
+  requestSummary String?
+  responseBody  String?
+  startedAt     DateTime
+  finishedAt    DateTime?
+
+  job PublishJob @relation(fields: [jobId], references: [id], onDelete: Restrict)
+
+  @@unique([jobId, attemptNumber])
+}
+
+model PostingSlot {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  socialAccountId String
+  dayOfWeek       Int
+  slotTime        String
+  timezone        String
+  isActive        Boolean  @default(true)
+  source          String   @default("manual")
+  createdAt       DateTime @default(now())
+
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([socialAccountId, dayOfWeek, slotTime])
+}
+
+model PostApproval {
+  id          String    @id @default(uuid())
+  workspaceId String
+  postId      String
+  reviewerId  String
+  decision    String    @default("pending")
+  comments    String?
+  requestedAt DateTime  @default(now())
+  decidedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reviewer  User      @relation("ApprovalReviewer", fields: [reviewerId], references: [id])
+
+  @@index([postId, decision])
+  @@index([workspaceId, reviewerId, decision])
+}
+
+model Task {
+  id          String    @id @default(uuid())
+  workspaceId String
+  campaignId  String?
+  postId      String?
+  title       String
+  description String?
+  status      String    @default("todo")
+  priority    String    @default("medium")
+  assignedTo  String?
+  createdBy   String
+  dueAt       DateTime?
+  completedAt DateTime?
+  source      String    @default("manual")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign  Campaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  post      Post?         @relation(fields: [postId], references: [id], onDelete: SetNull)
+  assignee  User?         @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+  creator   User          @relation("TaskCreator", fields: [createdBy], references: [id])
+  comments  TaskComment[]
+
+  @@index([workspaceId, status])
+  @@index([assignedTo, status])
+  @@index([workspaceId, dueAt])
+}
+
+model TaskComment {
+  id        String   @id @default(uuid())
+  taskId    String
+  userId    String
+  body      String
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([taskId])
+}
+
+model AutomationRule {
+  id            String   @id @default(uuid())
+  workspaceId   String
+  ruleType      String
+  name          String
+  configuration String   @default("{}")
+  enabled       Boolean  @default(true)
+  createdBy     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator   User            @relation("AutomationCreator", fields: [createdBy], references: [id])
+  runs      AutomationRun[]
+
+  @@index([workspaceId, ruleType])
+}
+
+model AutomationRun {
+  id          String    @id @default(uuid())
+  workspaceId String
+  ruleId      String
+  status      String    @default("queued")
+  result      String?
+  error       String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  rule      AutomationRule    @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  recommendations AiRecommendation[]
+
+  @@index([ruleId, createdAt])
+  @@index([workspaceId, status])
+}
+
+model AiRecommendation {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  runId           String?
+  type            String
+  postTargetId    String?
+  socialAccountId String?
+  payload         String
+  status          String    @default("suggested")
+  decidedBy       String?
+  decidedAt       DateTime?
+  finalValue      String?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  run           AutomationRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  postTarget    PostTarget?    @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  decider       User?          @relation("RecommendationDecider", fields: [decidedBy], references: [id])
+
+  @@index([workspaceId, status, type])
+  @@index([postTargetId])
+}
+
+model DiscordIntegration {
+  id                    String    @id @default(uuid())
+  workspaceId           String    @unique
+  discordGuildId        String
+  guildName             String?
+  botStatus             String    @default("connected")
+  notificationChannelId String?
+  approvalsChannelId    String?
+  alertsChannelId       String?
+  reportsChannelId      String?
+  notificationSettings  String    @default("{}")
+  commandPermissions    String    @default("{}")
+  connectedBy           String
+  connectedAt           DateTime  @default(now())
+  disconnectedAt        DateTime?
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connector User             @relation("DiscordConnector", fields: [connectedBy], references: [id])
+  commands  DiscordCommand[]
+
+  @@index([discordGuildId])
+}
+
+model DiscordUserLink {
+  id              String    @id @default(uuid())
+  userId          String
+  workspaceId     String
+  discordUserId   String
+  discordUsername String?
+  verifiedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@unique([workspaceId, discordUserId])
+}
+
+model DiscordCommand {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  integrationId   String
+  userId          String?
+  discordUserId   String
+  command         String
+  arguments       String?
+  status          String    @default("received")
+  result          String?
+  rejectionReason String?
+  executedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integration DiscordIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  user        User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, status])
+}
+
+model AnalyticsDaily {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  postTargetId    String
+  metricDate      DateTime
+  impressions     Int      @default(0)
+  reach           Int      @default(0)
+  likes           Int      @default(0)
+  comments        Int      @default(0)
+  shares          Int      @default(0)
+  saves           Int      @default(0)
+  clicks          Int      @default(0)
+  videoViews      Int      @default(0)
+  rawMetrics      String?
+  collectedAt     DateTime @default(now())
+
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  postTarget PostTarget @relation(fields: [postTargetId], references: [id], onDelete: Cascade)
+
+  @@unique([postTargetId, metricDate])
+  @@index([workspaceId, metricDate])
+}
+
+model AccountMetricsDaily {
+  id              String   @id @default(uuid())
+  workspaceId     String
+  socialAccountId String
+  metricDate      DateTime
+  followers       Int      @default(0)
+  followersGained Int      @default(0)
+  followersLost   Int      @default(0)
+  reach           Int      @default(0)
+  impressions     Int      @default(0)
+  profileViews    Int      @default(0)
+  engagementRate  Float?
+  rawMetrics      String?
+  collectedAt     DateTime @default(now())
+
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([socialAccountId, metricDate])
+  @@index([workspaceId, metricDate])
+}
+
+model Report {
+  id          String   @id @default(uuid())
+  workspaceId String
+  type        String
+  periodStart DateTime
+  periodEnd   DateTime
+  data        String
+  generatedBy String   @default("system")
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, type, periodStart])
+}
+
+model Notification {
+  id          String    @id @default(uuid())
+  workspaceId String
+  userId      String?
+  type        String
+  channel     String    @default("in_app")
+  title       String
+  body        String?
+  entityType  String?
+  entityId    String?
+  isRead      Boolean   @default(false)
+  sentAt      DateTime?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+model EmailOutbox {
+  id        String   @id @default(uuid())
+  to        String
+  subject   String
+  body      String
+  link      String?
+  createdAt DateTime @default(now())
+}
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  workspaceId String
+  actorUserId String?
+  actorType   String   @default("user")
+  action      String
+  entityType  String
+  entityId    String?
+  metadata    String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User?     @relation("ActivityActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, entityType, entityId])
+  @@index([actorUserId])
+}

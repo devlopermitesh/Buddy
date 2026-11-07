@@ -1,23 +1,8 @@
-import FinalCta from "@/components/FinalCta";
-import Hero from "@/components/Hero";
-import HowWeRoll from "@/components/HowWeRoll";
-import Marquee from "@/components/Marquee";
-import PromiseSection from "@/components/PromiseSection";
-import ScrollProgress from "@/components/ScrollProgress";
-import TrustSection from "@/components/TrustSection";
+import { redirect } from "next/navigation";
+import { getSessionUser, resolvePostLoginPath } from "@/lib/auth";
 
-export default function Home() {
-  return (
-    <>
-      <ScrollProgress />
-      <main id="app">
-        <Hero />
-        <Marquee />
-        <PromiseSection />
-        <HowWeRoll />
-        <TrustSection />
-        <FinalCta />
-      </main>
-    </>
-  );
+export default async function RootPage() {
+  const user = await getSessionUser();
+  if (user) redirect(await resolvePostLoginPath(user.id));
+  redirect("/index.html");
 }

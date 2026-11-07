@@ -1,0 +1,917 @@
+// SocialFlow – Team-Based Social Media Management & Automation Platform
+// PostgreSQL + Prisma | All timestamps in UTC (timestamptz)
+// Docs: https://dbml.dbdiagram.io/docs
+
+Project socialflow {
+  database_type: 'PostgreSQL'
+  Note: 'Every workspace-owned table carries workspace_id for isolation (enforce in API + Postgres RLS).'
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+Enum workspace_role {
+  admin
+  manager
+  executive
+}
+
+Enum member_status {
+  active
+  suspended
+  removed
+}
+
+Enum invitation_status {
+  pending
+  accepted
+  expired
+  revoked
+}
+
+Enum platform_type {
+  instagram
+  facebook
+}
+
+Enum account_status {
+  active
+  token_expired
+  revoked
+  disconnected
+}
+
+Enum post_status {
+  draft
+  pending_approval
+  approved
+  scheduled
+  queued
+  publishing
+  published
+  partially_published
+  failed
+  revision_required
+  cancelled
+}
+
+Enum target_status {
+  draft
+  scheduled
+  queued
+  publishing
+  published
+  failed
+  cancelled
+}
+
+Enum post_format {
+  feed_post
+  reel
+  story
+  carousel
+  text
+}
+
+Enum media_type {
+  image
+  video
+}
+
+Enum job_status {
+  waiting
+  locked
+  running
+  succeeded
+  failed
+  retrying
+  uncertain   // outcome unknown, needs reconciliation
+  cancelled
+}
+
+Enum attempt_result {
+  success
+  failure
+  timeout
+  unknown
+}
+
+Enum approval_decision {
+  pending
+  approved
+  rejected
+  revision_requested
+}
+
+Enum task_status {
+  todo
+  in_progress
+  in_review
+  done
+  cancelled
+}
+
+Enum task_priority {
+  low
+  medium
+  high
+  urgent
+}
+
+Enum campaign_status {
+  planned
+  active
+  paused
+  completed
+  archived
+}
+
+Enum automation_rule_type {
+  best_time_prediction
+  smart_scheduling
+  queue_optimization
+  content_gap_detection
+  failure_monitoring
+  daily_planning
+  performance_insights
+}
+
+Enum run_status {
+  queued
+  running
+  succeeded
+  failed
+  skipped
+}
+
+Enum recommendation_type {
+  posting_time
+  content_gap
+  queue_change
+  failure_recovery
+  daily_task
+  insight
+}
+
+Enum recommendation_status {
+  suggested
+  accepted
+  modified
+  dismissed
+  expired
+}
+
+Enum command_status {
+  received
+  authorized
+  rejected
+  executed
+  failed
+}
+
+Enum notification_channel {
+  in_app
+  discord
+  email
+}
+
+Enum notification_type {
+  post_published
+  publish_failed
+  approval_required
+  approval_decision
+  upcoming_post
+  daily_summary
+  weekly_report
+  task_assigned
+  token_expiring
+}
+
+Enum report_type {
+  daily
+  weekly
+  monthly
+}
+
+// ============================================================
+// IDENTITY & WORKSPACE
+// ============================================================
+
+Table users {
+  id uuid [pk, default: `gen_random_uuid()`]
+  email varchar(255) [not null, unique]
+  password_hash varchar(255) [note: 'null if OAuth-only login']
+  full_name varchar(150) [not null]
+  avatar_url text
+  timezone varchar(64) [not null, default: 'UTC']
+  is_active boolean [not null, default: true]
+  email_verified_at timestamptz
+  last_login_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+}
+
+Table workspaces {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(150) [not null]
+  slug varchar(100) [not null, unique]
+  logo_url text
+  default_timezone varchar(64) [not null, default: 'UTC']
+  owner_id uuid [not null, note: 'creator / primary admin']
+  settings jsonb [not null, default: '{}']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  deleted_at timestamptz
+}
+
+Table workspace_members {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  user_id uuid [not null]
+  role workspace_role [not null, default: 'executive']
+  status member_status [not null, default: 'active']
+  permission_overrides jsonb [not null, default: '{}', note: 'per-member grants/denies on top of role']
+  joined_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, user_id) [unique]
+    user_id
+  }
+}
+
+Table role_permissions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  role workspace_role [not null]
+  permission varchar(80) [not null, note: 'e.g. posts.approve, accounts.connect, discord.configure']
+  allowed boolean [not null, default: true]
+
+  indexes {
+    (workspace_id, role, permission) [unique]
+  }
+  Note: 'Makes permissions configurable instead of hardcoded.'
+}
+
+Table invitations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  email varchar(255) [not null]
+  role workspace_role [not null, default: 'executive']
+  token_hash varchar(255) [not null, unique]
+  status invitation_status [not null, default: 'pending']
+  invited_by uuid [not null]
+  expires_at timestamptz [not null]
+  accepted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, email, status)
+  }
+}
+
+Table user_sessions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  refresh_token_hash varchar(255) [not null, unique]
+  ip_address inet
+  user_agent text
+  expires_at timestamptz [not null]
+  revoked_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    user_id
+  }
+}
+
+// ============================================================
+// SOCIAL ACCOUNTS
+// ============================================================
+
+Table social_accounts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  platform platform_type [not null]
+  platform_account_id varchar(100) [not null, note: 'IG business account ID / FB Page ID']
+  account_name varchar(150) [not null]
+  username varchar(150)
+  profile_picture_url text
+  linked_page_id varchar(100) [note: 'FB Page linked to the IG account']
+  status account_status [not null, default: 'active']
+  connected_by uuid [not null]
+  connected_at timestamptz [not null, default: `now()`]
+  last_synced_at timestamptz
+  disconnected_at timestamptz
+  metadata jsonb [not null, default: '{}']
+
+  indexes {
+    (workspace_id, platform, platform_account_id) [unique]
+    (workspace_id, status)
+  }
+  Note: 'Revoked/disconnected accounts must cancel queued publish jobs.'
+}
+
+Table social_credentials {
+  id uuid [pk, default: `gen_random_uuid()`]
+  social_account_id uuid [not null, unique]
+  access_token_encrypted text [not null]
+  refresh_token_encrypted text
+  encryption_key_id varchar(100) [not null, note: 'KMS / secrets-manager key reference']
+  scopes text[]
+  expires_at timestamptz
+  last_refreshed_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  Note: 'Kept apart from social_accounts. Never returned by API or exposed to Discord.'
+}
+
+// ============================================================
+// CAMPAIGNS
+// ============================================================
+
+Table campaigns {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  name varchar(150) [not null]
+  description text
+  status campaign_status [not null, default: 'planned']
+  start_date date
+  end_date date
+  goal text
+  color varchar(9)
+  created_by uuid [not null]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, status)
+  }
+}
+
+// ============================================================
+// CONTENT
+// ============================================================
+
+Table media_assets {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  uploaded_by uuid [not null]
+  type media_type [not null]
+  file_name varchar(255) [not null]
+  storage_key text [not null, note: 'S3/R2 object key']
+  public_url text
+  mime_type varchar(100) [not null]
+  size_bytes bigint [not null]
+  width int
+  height int
+  duration_seconds numeric(8,2)
+  thumbnail_url text
+  alt_text varchar(500)
+  folder varchar(150)
+  tags text[]
+  created_at timestamptz [not null, default: `now()`]
+  deleted_at timestamptz
+
+  indexes {
+    (workspace_id, type)
+    (workspace_id, created_at)
+  }
+}
+
+Table posts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  campaign_id uuid
+  title varchar(200)
+  base_caption text
+  format post_format [not null, default: 'feed_post']
+  status post_status [not null, default: 'draft']
+  created_by uuid [not null]
+  submitted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+  deleted_at timestamptz
+
+  indexes {
+    (workspace_id, status)
+    (workspace_id, campaign_id)
+    created_by
+  }
+  Note: 'Parent post status is derived from its post_targets.'
+}
+
+Table post_targets {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  post_id uuid [not null]
+  social_account_id uuid [not null]
+  caption text [note: 'platform-specific caption, falls back to posts.base_caption']
+  first_comment text
+  platform_options jsonb [not null, default: '{}', note: 'platform-specific payload settings (location, collaborators, cover frame, etc.)']
+  scheduled_at timestamptz
+  published_at timestamptz
+  status target_status [not null, default: 'draft']
+  external_post_id varchar(150) [note: 'ID returned by Meta']
+  external_permalink text
+  last_error text
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (post_id, social_account_id) [unique]
+    (workspace_id, status, scheduled_at)
+    (social_account_id, scheduled_at)
+  }
+  Note: 'One row per destination. Facebook can succeed while Instagram fails.'
+}
+
+Table post_media {
+  id uuid [pk, default: `gen_random_uuid()`]
+  post_id uuid [not null]
+  post_target_id uuid [note: 'null = shared across all targets; set = platform-specific override']
+  media_asset_id uuid [not null]
+  position int [not null, default: 0]
+  crop_settings jsonb
+
+  indexes {
+    (post_id, post_target_id, position)
+    media_asset_id
+  }
+}
+
+Table hashtags {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  tag varchar(100) [not null]
+  group_name varchar(100) [note: 'saved hashtag groups']
+  use_count int [not null, default: 0]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, tag) [unique]
+  }
+}
+
+Table post_hashtags {
+  post_id uuid [not null]
+  hashtag_id uuid [not null]
+
+  indexes {
+    (post_id, hashtag_id) [pk]
+  }
+}
+
+// ============================================================
+// PUBLISHING ENGINE
+// ============================================================
+
+Table publish_jobs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  post_target_id uuid [not null]
+  idempotency_key varchar(150) [not null, unique, note: 'prevents duplicate publishing']
+  run_at timestamptz [not null]
+  status job_status [not null, default: 'waiting']
+  attempts int [not null, default: 0]
+  max_attempts int [not null, default: 3]
+  locked_by varchar(100) [note: 'worker id']
+  locked_at timestamptz
+  next_retry_at timestamptz
+  queue_job_id varchar(100) [note: 'BullMQ job id']
+  completed_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (status, run_at)
+    (workspace_id, status)
+    post_target_id
+  }
+}
+
+Table publish_attempts {
+  id uuid [pk, default: `gen_random_uuid()`]
+  job_id uuid [not null]
+  attempt_number int [not null]
+  result attempt_result [not null]
+  response_code int
+  error_code varchar(100)
+  error_message text
+  request_summary jsonb
+  response_body jsonb
+  started_at timestamptz [not null]
+  finished_at timestamptz
+
+  indexes {
+    (job_id, attempt_number) [unique]
+  }
+  Note: 'Immutable history. Insert-only, never updated or deleted.'
+}
+
+Table posting_slots {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  social_account_id uuid [not null]
+  day_of_week smallint [not null, note: '0 = Sunday ... 6 = Saturday']
+  slot_time time [not null]
+  timezone varchar(64) [not null]
+  is_active boolean [not null, default: true]
+  source varchar(20) [not null, default: 'manual', note: 'manual | ai']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (social_account_id, day_of_week, slot_time) [unique]
+  }
+}
+
+// ============================================================
+// APPROVALS & TASKS
+// ============================================================
+
+Table post_approvals {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  post_id uuid [not null]
+  reviewer_id uuid [not null]
+  decision approval_decision [not null, default: 'pending']
+  comments text
+  requested_at timestamptz [not null, default: `now()`]
+  decided_at timestamptz
+
+  indexes {
+    (post_id, decision)
+    (workspace_id, reviewer_id, decision)
+  }
+}
+
+Table tasks {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  campaign_id uuid
+  post_id uuid
+  title varchar(200) [not null]
+  description text
+  status task_status [not null, default: 'todo']
+  priority task_priority [not null, default: 'medium']
+  assigned_to uuid
+  created_by uuid [not null]
+  due_at timestamptz
+  completed_at timestamptz
+  source varchar(20) [not null, default: 'manual', note: 'manual | ai | discord']
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, status)
+    (assigned_to, status)
+    (workspace_id, due_at)
+  }
+}
+
+Table task_comments {
+  id uuid [pk, default: `gen_random_uuid()`]
+  task_id uuid [not null]
+  user_id uuid [not null]
+  body text [not null]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    task_id
+  }
+}
+
+// ============================================================
+// AI AUTOMATION
+// ============================================================
+
+Table automation_rules {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  rule_type automation_rule_type [not null]
+  name varchar(150) [not null]
+  configuration jsonb [not null, default: '{}']
+  enabled boolean [not null, default: true]
+  created_by uuid [not null]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, rule_type)
+  }
+}
+
+Table automation_runs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  rule_id uuid [not null]
+  status run_status [not null, default: 'queued']
+  result jsonb
+  error text
+  started_at timestamptz
+  finished_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (rule_id, created_at)
+    (workspace_id, status)
+  }
+}
+
+Table ai_recommendations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  run_id uuid
+  type recommendation_type [not null]
+  post_target_id uuid
+  social_account_id uuid
+  payload jsonb [not null, note: 'e.g. suggested time, reasoning, confidence']
+  status recommendation_status [not null, default: 'suggested']
+  decided_by uuid
+  decided_at timestamptz
+  final_value jsonb [note: 'what the user actually chose, kept apart from the AI suggestion']
+  expires_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, status, type)
+    post_target_id
+  }
+  Note: 'AI suggestions are stored separately from user decisions. AI never publishes unapproved content.'
+}
+
+// ============================================================
+// DISCORD
+// ============================================================
+
+Table discord_integrations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null, unique]
+  discord_guild_id varchar(30) [not null]
+  guild_name varchar(150)
+  bot_status varchar(20) [not null, default: 'connected']
+  notification_channel_id varchar(30)
+  approvals_channel_id varchar(30)
+  alerts_channel_id varchar(30)
+  reports_channel_id varchar(30)
+  notification_settings jsonb [not null, default: '{}']
+  command_permissions jsonb [not null, default: '{}', note: 'role -> allowed commands']
+  connected_by uuid [not null]
+  connected_at timestamptz [not null, default: `now()`]
+  disconnected_at timestamptz
+
+  indexes {
+    discord_guild_id
+  }
+}
+
+Table discord_user_links {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  workspace_id uuid [not null]
+  discord_user_id varchar(30) [not null]
+  discord_username varchar(100)
+  verified_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, user_id) [unique]
+    (workspace_id, discord_user_id) [unique]
+  }
+}
+
+Table discord_commands {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  integration_id uuid [not null]
+  user_id uuid [note: 'null if the Discord user is not linked']
+  discord_user_id varchar(30) [not null]
+  command varchar(50) [not null]
+  arguments jsonb
+  status command_status [not null, default: 'received']
+  result jsonb
+  rejection_reason text
+  executed_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, created_at)
+    (workspace_id, status)
+  }
+}
+
+// ============================================================
+// ANALYTICS & REPORTS
+// ============================================================
+
+Table analytics_daily {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  post_target_id uuid [not null]
+  metric_date date [not null]
+  impressions int [not null, default: 0]
+  reach int [not null, default: 0]
+  likes int [not null, default: 0]
+  comments int [not null, default: 0]
+  shares int [not null, default: 0]
+  saves int [not null, default: 0]
+  clicks int [not null, default: 0]
+  video_views int [not null, default: 0]
+  raw_metrics jsonb
+  collected_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (post_target_id, metric_date) [unique]
+    (workspace_id, metric_date)
+  }
+}
+
+Table account_metrics_daily {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  social_account_id uuid [not null]
+  metric_date date [not null]
+  followers int [not null, default: 0]
+  followers_gained int [not null, default: 0]
+  followers_lost int [not null, default: 0]
+  reach int [not null, default: 0]
+  impressions int [not null, default: 0]
+  profile_views int [not null, default: 0]
+  engagement_rate numeric(6,3)
+  raw_metrics jsonb
+  collected_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (social_account_id, metric_date) [unique]
+    (workspace_id, metric_date)
+  }
+}
+
+Table reports {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  type report_type [not null]
+  period_start date [not null]
+  period_end date [not null]
+  data jsonb [not null]
+  generated_by varchar(20) [not null, default: 'system', note: 'system | user']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, type, period_start)
+  }
+}
+
+// ============================================================
+// OPERATIONS
+// ============================================================
+
+Table notifications {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  user_id uuid [note: 'null = workspace-wide']
+  type notification_type [not null]
+  channel notification_channel [not null, default: 'in_app']
+  title varchar(200) [not null]
+  body text
+  entity_type varchar(50)
+  entity_id uuid
+  is_read boolean [not null, default: false]
+  sent_at timestamptz
+  read_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, is_read, created_at)
+    (workspace_id, created_at)
+  }
+}
+
+Table activity_logs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  workspace_id uuid [not null]
+  actor_user_id uuid [note: 'null for system / AI / worker actions']
+  actor_type varchar(20) [not null, default: 'user', note: 'user | system | ai | discord']
+  action varchar(100) [not null, note: 'e.g. post.approved, account.connected']
+  entity_type varchar(50) [not null]
+  entity_id uuid
+  metadata jsonb
+  ip_address inet
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (workspace_id, created_at)
+    (workspace_id, entity_type, entity_id)
+    actor_user_id
+  }
+}
+
+// ============================================================
+// RELATIONSHIPS
+// ============================================================
+
+// Identity
+Ref: workspaces.owner_id > users.id
+Ref: workspace_members.workspace_id > workspaces.id [delete: cascade]
+Ref: workspace_members.user_id > users.id [delete: cascade]
+Ref: role_permissions.workspace_id > workspaces.id [delete: cascade]
+Ref: invitations.workspace_id > workspaces.id [delete: cascade]
+Ref: invitations.invited_by > users.id
+Ref: user_sessions.user_id > users.id [delete: cascade]
+
+// Social accounts
+Ref: social_accounts.workspace_id > workspaces.id [delete: cascade]
+Ref: social_accounts.connected_by > users.id
+Ref: social_credentials.social_account_id - social_accounts.id [delete: cascade]
+
+// Campaigns
+Ref: campaigns.workspace_id > workspaces.id [delete: cascade]
+Ref: campaigns.created_by > users.id
+
+// Content
+Ref: media_assets.workspace_id > workspaces.id [delete: cascade]
+Ref: media_assets.uploaded_by > users.id
+Ref: posts.workspace_id > workspaces.id [delete: cascade]
+Ref: posts.campaign_id > campaigns.id [delete: set null]
+Ref: posts.created_by > users.id
+Ref: post_targets.workspace_id > workspaces.id [delete: cascade]
+Ref: post_targets.post_id > posts.id [delete: cascade]
+Ref: post_targets.social_account_id > social_accounts.id [delete: restrict]
+Ref: post_media.post_id > posts.id [delete: cascade]
+Ref: post_media.post_target_id > post_targets.id [delete: cascade]
+Ref: post_media.media_asset_id > media_assets.id [delete: restrict]
+Ref: hashtags.workspace_id > workspaces.id [delete: cascade]
+Ref: post_hashtags.post_id > posts.id [delete: cascade]
+Ref: post_hashtags.hashtag_id > hashtags.id [delete: cascade]
+
+// Publishing
+Ref: publish_jobs.workspace_id > workspaces.id [delete: cascade]
+Ref: publish_jobs.post_target_id > post_targets.id [delete: cascade]
+Ref: publish_attempts.job_id > publish_jobs.id [delete: restrict]
+Ref: posting_slots.workspace_id > workspaces.id [delete: cascade]
+Ref: posting_slots.social_account_id > social_accounts.id [delete: cascade]
+
+// Approvals & tasks
+Ref: post_approvals.workspace_id > workspaces.id [delete: cascade]
+Ref: post_approvals.post_id > posts.id [delete: cascade]
+Ref: post_approvals.reviewer_id > users.id
+Ref: tasks.workspace_id > workspaces.id [delete: cascade]
+Ref: tasks.campaign_id > campaigns.id [delete: set null]
+Ref: tasks.post_id > posts.id [delete: set null]
+Ref: tasks.assigned_to > users.id [delete: set null]
+Ref: tasks.created_by > users.id
+Ref: task_comments.task_id > tasks.id [delete: cascade]
+Ref: task_comments.user_id > users.id
+
+// AI
+Ref: automation_rules.workspace_id > workspaces.id [delete: cascade]
+Ref: automation_rules.created_by > users.id
+Ref: automation_runs.workspace_id > workspaces.id [delete: cascade]
+Ref: automation_runs.rule_id > automation_rules.id [delete: cascade]
+Ref: ai_recommendations.workspace_id > workspaces.id [delete: cascade]
+Ref: ai_recommendations.run_id > automation_runs.id [delete: set null]
+Ref: ai_recommendations.post_target_id > post_targets.id [delete: cascade]
+Ref: ai_recommendations.social_account_id > social_accounts.id [delete: cascade]
+Ref: ai_recommendations.decided_by > users.id
+
+// Discord
+Ref: discord_integrations.workspace_id - workspaces.id [delete: cascade]
+Ref: discord_integrations.connected_by > users.id
+Ref: discord_user_links.user_id > users.id [delete: cascade]
+Ref: discord_user_links.workspace_id > workspaces.id [delete: cascade]
+Ref: discord_commands.workspace_id > workspaces.id [delete: cascade]
+Ref: discord_commands.integration_id > discord_integrations.id [delete: cascade]
+Ref: discord_commands.user_id > users.id [delete: set null]
+
+// Analytics
+Ref: analytics_daily.workspace_id > workspaces.id [delete: cascade]
+Ref: analytics_daily.post_target_id > post_targets.id [delete: cascade]
+Ref: account_metrics_daily.workspace_id > workspaces.id [delete: cascade]
+Ref: account_metrics_daily.social_account_id > social_accounts.id [delete: cascade]
+Ref: reports.workspace_id > workspaces.id [delete: cascade]
+
+// Operations
+Ref: notifications.workspace_id > workspaces.id [delete: cascade]
+Ref: notifications.user_id > users.id [delete: cascade]
+Ref: activity_logs.workspace_id > workspaces.id [delete: cascade]
+Ref: activity_logs.actor_user_id > users.id [delete: set null]
+
+// ============================================================
+// SAMPLE RECORDS
+// ============================================================
+
+Records users(id, email, full_name) {
+  '11111111-1111-1111-1111-111111111111', 'admin@example.com', 'Alice Admin'
+  '22222222-2222-2222-2222-222222222222', 'manager@example.com', 'Bob Manager'
+  '33333333-3333-3333-3333-333333333333', 'exec@example.com', 'Candice Executive'
+}
+
+Records workspaces(id, name, slug, owner_id) {
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'Demo Brand', 'demo-brand', '11111111-1111-1111-1111-111111111111'
+}
+
+Records workspace_members(workspace_id, user_id, role) {
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '11111111-1111-1111-1111-111111111111', 'admin'
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '22222222-2222-2222-2222-222222222222', 'manager'
+  'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '33333333-3333-3333-3333-333333333333', 'executive'
+}

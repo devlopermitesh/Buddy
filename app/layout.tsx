@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { Anton, Inter } from "next/font/google";
+import { Inter } from "next/font/google";
+import { Toaster } from "sonner";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 const inter = Inter({
@@ -8,54 +10,33 @@ const inter = Inter({
   display: "swap",
 });
 
-const anton = Anton({
-  subsets: ["latin"],
-  weight: "400",
-  variable: "--font-anton",
-  display: "swap",
-});
-
 export const metadata: Metadata = {
-  metadataBase: new URL("https://buddy.social"),
-  title: "BUDDY — Your 24/7 Social Sidekick",
+  title: {
+    default: "SocialFlow",
+    template: "%s · SocialFlow",
+  },
   description:
-    "Meet BUDDY, the smiling sidekick that learns your brand, plans your content, and takes the everyday stress of social media off your plate.",
-  keywords: [
-    "BUDDY",
-    "social media sidekick",
-    "content planning",
-    "brand voice",
-    "social media manager",
-  ],
-  openGraph: {
-    title: "BUDDY — Your 24/7 Social Sidekick",
-    description:
-      "A little less content chaos. A lot more consistency. Meet the sidekick that keeps your brand showing up.",
-    type: "website",
-    siteName: "BUDDY",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "BUDDY — Your 24/7 Social Sidekick",
-    description:
-      "A little less content chaos. A lot more consistency. Meet the sidekick that keeps your brand showing up.",
-  },
+    "SocialFlow is a team-based social media management and automation platform for Instagram and Facebook.",
 };
 
 export const viewport: Viewport = {
-  themeColor: "#faf9f6",
   width: "device-width",
   initialScale: 1,
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#090909" },
+  ],
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${anton.variable}`}>
-      <body>{children}</body>
+    <html lang="en" suppressHydrationWarning className={inter.variable}>
+      <body>
+        <ThemeProvider>
+          {children}
+          <Toaster richColors position="top-right" closeButton />
+        </ThemeProvider>
+      </body>
     </html>
   );
 }
